@@ -1,41 +1,227 @@
-# Prerequisites
-*.d
+#include <iostream>
+#include <random>
+#include <cmath>
+#include <algorithm>
+#include <iomanip>
+#include <fstream>  
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
+using namespace std;
 
-# Precompiled Headers
-*.gch
-*.pch
+class PriceProcessor {
+private:
+    double* price_data = nullptr;
+    int current_simulations = 0;
+    bool data_ready = false;
 
-# Linker files
-*.ilk
+    double S0 = 100.0, K = 105.0, T = 1.0, r = 0.05, barrier = 160.0;
+    double vol_low = 0.15, vol_high = 0.35, p_stay = 0.98;
+    double lambda = 0.1, j_mu = -0.15, j_sig = 0.1;
 
-# Debugger Files
-*.pdb
+    void selection_sort(double* arr, int n) {
+        if (n <= 1) return;
+        for (int i = 0; i < n - 1; ++i) {
+            int min_idx = i;
+            for (int j = i + 1; j < n; ++j) {
+                if (arr[j] < arr[min_idx]) min_idx = j;
+            }
+            swap(arr[i], arr[min_idx]);
+        }
+    }
 
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
+public:
+    PriceProcessor() : price_data(nullptr), current_simulations(0), data_ready(false) {}
+    ~PriceProcessor() { delete[] price_data; }
 
-# Fortran module files
-*.mod
-*.smod
+    void input_manual_prices() {
+        cout << "\n[Manual Mode] How many prices to enter? ";
+        cin >> current_simulations;
+        if (price_data) delete[] price_data;
+        price_data = new double[current_simulations];
+        for (int i = 0; i < current_simulations; ++i) {
+            cout << "  Enter Price #" << i + 1 << ": ";
+            cin >> price_data[i];
+        }
+        data_ready = true;
+        cout << "[System] Manual data loaded.\n";
+    }
 
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
+    void run_monte_carlo() {
+        cout << "\n[Simulation Mode] Number of paths: ";
+        cin >> current_simulations;
+        
+        if (current_simulations > 10000) {
+            cout << "!! Warning: Detailed output with high simulation counts will clutter the screen. !!\n";
+        }
 
-# Executables
-*.exe
-*.out
-*.app
+        if (price_data) delete[] price_data;
+        price_data = new double[current_simulations];
 
-# debug information files
-*.dwo
+        mt19937 gen(42);
+        normal_distribution<double> norm(0.0, 1.0);
+        uniform_real_distribution<double> uni(0.0, 1.0);
+
+        int steps = 252;
+        double dt = 1.0 / steps;
+        double k_adj = exp(j_mu + 0.5 * j_sig * j_sig) - 1.0;
+        double drift = r - lambda * k_adj;
+
+        cout << "\n-------------------------------------------------\n";
+        cout << "INITIATING MONTE CARLO SIMULATION\n";
+        cout << "-------------------------------------------------\n";
+        cout << fixed << setprecision(4);
+        cout << "Spot: " << S0 << " | Barrier: " << barrier << " | Steps: " << steps << "\n";
+        cout << "-------------------------------------------------\n";
+
+        for (int i = 0; i < current_simulations; ++i) {
+            double s = S0;
+            int state = 0; // 0 = low vol, 1 = high vol
+            bool out = false;
+
+            if (i < 3) {
+                cout << "[Path " << i + 1 << "] Starting at " << s << "\n";
+            }
+
+            for (int j = 0; j < steps; ++j) {
+                if (uni(gen) > p_stay) {
+                    state = 1 - state;
+                }
+                double v = (state == 0) ? vol_low : vol_high;
+                
+                s *= exp((drift - 0.5 * v * v) * dt + v * sqrt(dt) * norm(gen));
+
+                if (s >= barrier) {
+                    out = true;
+                    if (i < 3) cout << "  -> STEP " << j << ": KICKED OUT at " << s << "\n";
+                    break;
+                }
+
+                if (uni(gen) < lambda * dt) {
+                    double jump = exp(j_mu + j_sig * norm(gen));
+                    s *= jump;
+                    if (i < 3) cout << "  -> STEP " << j << ": Jumped to " << s << "\n";
+                    // Check barrier again after jump
+                    if (s >= barrier) {
+                        out = true;
+                        if (i < 3) cout << "  -> STEP " << j << ": KICKED OUT after jump at " << s << "\n";
+                        break;
+                    }
+                }
+            }
+            
+            if (out) {
+                price_data[i] = 0.0;
+                if (i < 3) cout << "[Path " << i + 1 << "] Final Price: 0.0000 (Knocked Out)\n\n";
+            } else {
+                price_data[i] = s;
+                if (i < 3) cout << "[Path " << i + 1 << "] Final Price: " << s << " (Survived)\n\n";
+            }
+            
+            if (i == 3 && current_simulations > 3) {
+                cout << "... Simulating remaining paths silently ...\n";
+            }
+        }
+        cout << "-------------------------------------------------\n";
+        cout << "SIMULATION COMPLETE\n";
+        cout << "-------------------------------------------------\n";
+        
+        data_ready = true;
+    }
+
+    void sort_data() {
+        if (data_ready && price_data && current_simulations > 0) {
+            selection_sort(price_data, current_simulations);
+        }
+    }
+
+    void draw_histogram() {
+        if (!data_ready || current_simulations == 0) {
+            cout << "[Error] No data to plot.\n";
+            return;
+        }
+        sort_data();
+        const int num_bins = 10;
+        double min_val = price_data[0];
+        double max_val = price_data[current_simulations - 1];
+        double range = max_val - min_val;
+        if (range == 0) range = 1.0; 
+        double bin_width = range / num_bins;
+        cout << "\n--- Terminal Price Histogram ---\n";
+        cout << fixed << setprecision(2);
+        int current_idx = 0;
+        for (int i = 0; i < num_bins; ++i) {
+            double bin_start = min_val + (i * bin_width);
+            double bin_end = bin_start + bin_width;
+            int count = 0;
+            while (current_idx < current_simulations && (price_data[current_idx] < bin_end || (i == num_bins - 1 && price_data[current_idx] <= max_val))) {
+                count++; current_idx++;
+            }
+            cout << setw(6) << bin_start << " - " << setw(6) << bin_end << " | ";
+            int bar_length = (count * 40) / (current_simulations > 40 ? current_simulations/2 : current_simulations + 1);
+            if (count > 0 && bar_length == 0) bar_length = 1;
+            for (int j = 0; j < bar_length; ++j) cout << "█";
+            cout << " (" << count << ")\n";
+        }
+        cout << "--------------------------------\n";
+    }
+
+    void show_summary() {
+        if (!data_ready || current_simulations == 0) {
+            cout << "[Error] No data available.\n";
+            return;
+        }
+        sort_data();
+        double sum = 0;
+        for (int i = 0; i < current_simulations; ++i) sum += price_data[i];
+        cout << "\n--- Price Summary ---\n";
+        cout << "Total Paths  : " << current_simulations << "\n";
+        cout << "Minimum Price: $" << fixed << setprecision(4) << price_data[0] << "\n";
+        cout << "Maximum Price: $" << fixed << setprecision(4) << price_data[current_simulations-1] << "\n";
+        cout << "Average Price: $" << fixed << setprecision(4) << sum / current_simulations << "\n";
+        cout << "---------------------\n";
+    }
+
+    void find_better_price() {
+        if (!data_ready || current_simulations == 0) {
+            cout << "[Error] No data available.\n";
+            return;
+        }
+        sort_data();
+        int action = 0;
+        cout << "\nAre you buying or selling?\n1. Buying (Want lowest price)\n2. Selling (Want highest price)\n>> ";
+        cin >> action;
+
+        if (action == 1) {
+            cout << "\n[Result] The BEST price for buying is: $" << fixed << setprecision(4) << price_data[0] << "\n";
+        } else if (action == 2) {
+            cout << "\n[Result] The BEST price for selling is: $" << fixed << setprecision(4) << price_data[current_simulations - 1] << "\n";
+        } else {
+            cout << "[Error] Invalid selection.\n";
+        }
+    }
+
+    void save_to_file() {
+        if (!data_ready) return;
+        sort_data();
+        ofstream outFile("sorted_prices.txt");
+        for (int i = 0; i < current_simulations; ++i) outFile << fixed << setprecision(4) << price_data[i] << "\n";
+        outFile.close();
+        cout << "[System] Saved to 'sorted_prices.txt'.\n";
+    }
+};
+
+int main() {
+    PriceProcessor processor;
+    int choice = 0;
+    while (choice != 7) {
+        cout << "\n1. Manual Input\n2. Monte Carlo\n3. Show Histogram\n4. Price Summary\n5. Save to File\n6. Find Better Price\n7. Exit\n>> ";
+        cin >> choice;
+        if (choice == 1) processor.input_manual_prices();
+        else if (choice == 2) processor.run_monte_carlo();
+        else if (choice == 3) processor.draw_histogram();
+        else if (choice == 4) processor.show_summary();
+        else if (choice == 5) processor.save_to_file();
+        else if (choice == 6) processor.find_better_price();
+        else if (choice == 7) break;
+    }
+    return 0;
+}
